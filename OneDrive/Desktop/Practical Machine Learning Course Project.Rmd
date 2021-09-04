@@ -1,0 +1,204 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Sarah Spray"
+date: "9/2/2021"
+output:
+  html_document:
+    theme: "sandstone"
+    toc: yes
+    highlight: "zenburn"
+    keep_md: TRUE
+---
+
+```{r setup, include=FALSE}
+rmarkdown::html_document(df_print = knitr::kable)
+knitr::opts_chunk$set(fig.path = "figures/")
+```
+
+# Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+The goal of your project is to predict the manner in which they did the exercise. This will be found in the "classe" variable in the training set. As a result, this report will describe how I built my model, how I used cross validation, what the expected out of sample error is, and why I made the choices I did. 
+
+# Pre-Processing (Downloading the Data and Loading Packages for our Analysis) 
+
+The Data for this project was downloaded from the course website and saved to a local computer. It was then loaded into R using the following code: 
+
+```{r, echo=TRUE, message=FALSE}
+setwd("C:/Users/srspr/OneDrive/Desktop/Data Science/Practical Machine Learning")
+TrainDataFileURL <- 
+  "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+TrainDataFile <- "data/train.csv"
+if (!file.exists('data')) {
+    dir.create('data')
+}
+if (!file.exists(TrainDataFile)) {
+    download.file(url = TrainDataFileURL, destfile = TrainDataFile)
+}
+Training <- read.csv(TrainDataFile, sep = ",", header = TRUE)
+TestDataFileURL <- 
+  "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+TestDataFile <- "data/test.csv"
+if (!file.exists('data')) {
+    dir.create('data')
+}
+if (!file.exists(TestDataFile)) {
+    download.file(url = TestDataFileURL, destfile = TestDataFile)
+}
+Validation <- read.csv(TestDataFile, sep = ",", header = TRUE)
+```
+
+The following packages were loaded for our analysis.  I have also loaded the packages I will be using for parallel processing, and configured it so that I can utilize it when building my model.  
+
+```{r, echo = TRUE, warning=FALSE, message=FALSE}
+library(caret)
+library(lattice)
+library(ggplot2)
+library(AppliedPredictiveModeling)
+library(randomForest)
+library(plyr)
+library(dplyr)
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) 
+registerDoParallel(cluster)
+```
+
+# Cleaning the Data 
+
+First we will start, by looking at the data and selecting the variables appropriate for our analysis:
+
+```{r, echo=TRUE}
+str(Training)
+str(Validation)
+Training <- Training[,-(1:7)] # Based on our initial inspection of the data the first seven variables of our data (X, username, raw_timestamp_part_1, raw_timestamp_part_2,cvtd_timestamp, new_window, and num_window) will not be useful for our analysis and will therefore be dropped from our data set because they do not describe useful information for our outcome variable (i.e. "classe")
+Validation <- Validation[,-(1:7)]
+dim(Training)
+dim(Validation)
+```
+
+After, looking at the variables in the training and validation sets. We still have over 153 variables.  In order to tidy our data set, we want to remove any variables that have a variance of zero. Therefore, I will remove all "near-zero-variance" predictors in the training set as well as in the validation set. In addition, I will also change to "classe" variable to a factor rather than a character.
+
+Removing Near-Zero Variance Predictors
+
+```{r, echo=TRUE}
+Training1 <- nearZeroVar(Training)
+Train <- Training[,-Training1]
+Validation1 <- nearZeroVar(Validation)
+Validation <- Validation[,-Validation1]
+classe <- factor(Train$classe, levels = c("A", "B", "C", "D", "E"),
+                 labels = c("A", "B", "C", "D", "E"))
+dim(Train)
+dim(Validation)
+```
+
+After removing the Near-Zero Variance Predictors from both our training and validation sets we have an unequal number of variables.  In order, to make sure we are using variables that have non-zero predictors we will only be using the variables that have non-zero predictors in our validation set to build our models.  As a result we will eliminate, the remaining variables that we have in our training set with the following code: 
+
+```{r, echo=TRUE}
+new <- intersect(colnames(Validation), colnames(Train))
+new
+Train <- subset(Train, select = new)
+```
+
+Next, I will remove all highly correlated predictors.  I will do this in order to address any issues of collinearity, and reduce the number of predictor variables. It's also important to note that when I found similar column names in our Training and Validation set the "classe" variable was dropped this could be due to the near-zero-variance with only 20 observations in our Validation set. Therefore, I will add it back in to the training set after removing highly correlated predictors. 
+
+```{r, echo=TRUE}
+TrainingCor <- Train %>% as.data.frame()
+descrCor <- cor(TrainingCor)
+highCorr <- sum(abs(descrCor[upper.tri(descrCor)]) > .8 )
+descrCor <- cor(TrainingCor)
+summary(descrCor[upper.tri(descrCor)])
+highCorDescr <- findCorrelation(descrCor, cutoff = .8)
+filteredDescr <- TrainingCor[,-highCorDescr]
+descrCor2 <- cor(filteredDescr)
+summary(descrCor2[upper.tri(descrCor2)])
+# add classe factor variable back into the training data 
+Train <- cbind(filteredDescr, classe)
+```
+
+# Cross Validation 
+
+Following the line of research on the given dataset, the paper posted at http://web.archive.org/web/20170519033209/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf took a Random Forest approach.  I will also propose using a Random Forest approach.  In addition, I will use feature selection and set-up cross validation for my model using the function rfeControl in the caret package. I have selected 5-fold cross-validation.  I have also selected my model by selecting rfFuncs which implies the random forest algorithm.
+
+```{r, echo=TRUE}
+control <- rfeControl(functions = rfFuncs,
+                      method = "cv",
+                      number = 5,
+                      allowParallel = TRUE)
+```
+
+Next, I will partition the dataset into a training and testing set. By placing, 60% of the data into my training set and 40% into my testing set. I have saved the independent variables in a separate dataset(i.e x, x_train) and the predictor variables in another dataset (y, y_train, etc.).
+
+```{r, echo=TRUE}
+x <- Train %>% select(-classe) %>% as.data.frame()
+y <- Train$classe
+
+set.seed(2021)
+inTrain <- createDataPartition(y, p = 0.60, list = FALSE)[,1]
+
+x_train <- x[inTrain, ]
+x_test  <- x[-inTrain, ]
+
+y_train <- y[inTrain]
+y_test  <- y[-inTrain]
+```
+
+# Building my Model - Feature Selection 
+
+In order to build my model, I put everything together in the rfe function, and set the sizes = c(1:10, 15, 20, 30, 35) so that the function tries to find all possible solutions with features 1, 2, 3...15, 20, or 35.
+
+```{r, echo = TRUE}
+result_rfe1 <- rfe(x = x_train, 
+                   y = y_train, 
+                   sizes = c(1:10, 15, 20, 30, 35),
+                   rfeControl = control)
+result_rfe1
+predictors(result_rfe1)
+```
+
+When running rfe it uses a recursive feature elimination algorithm.  After my initial run it recommended 35 features for the model. Ideally, we would have less features but that could be a limitation of our study or show the inconsistency of the data in predicting class(i.e. subject error with the exercise). Nonetheless, we can then take these features and put them in a final data frame and build our random forest model based on the techniques we learned in the Practical Machine Learning Course.
+
+```{r, echo = TRUE}
+X <- Train %>% select(yaw_belt, magnet_dumbbell_z, magnet_dumbbell_y,
+                      pitch_forearm, magnet_belt_y, gyros_belt_z,
+                      accel_dumbbell_y, magnet_belt_z, 
+                      roll_arm, roll_forearm, magnet_forearm_z, roll_dumbbell,
+                      magnet_dumbbell_x, yaw_dumbbell, magnet_belt_x, yaw_arm, 
+                      total_accel_dumbbell, gyros_arm_y, accel_forearm_z, 
+                      accel_forearm_x, magnet_forearm_y, magnet_arm_z,
+                      gyros_dumbbell_y, pitch_arm, accel_arm_y, 
+                      total_accel_belt, magnet_arm_x, 
+                      yaw_forearm, accel_forearm_y, accel_arm_z,
+                      total_accel_arm, gyros_forearm_z, total_accel_forearm,
+                      magnet_forearm_x, gyros_belt_x, classe,)
+
+# We will Partition our Data Again and Set-up Cross Validation before running our final model 
+set.seed(2021)
+inTrain <- createDataPartition(X$classe, p = 0.60, list = FALSE)
+finaltraining <- X[ inTrain, ]
+finaltesting  <- X[-inTrain, ]
+fitControl <- trainControl(method='cv', number = 5,
+                           allowParallel = TRUE)
+```
+
+Finally, we will build our model on our testing set after using feature selection.  This portion may seem a little redundant; however, based on what was taught in the Practical Machine Learning Course I felt like it was necessary to show the features of the caret project we learned with the train function.  Had I decided to use the model that was constructed in the rfe function in caret, I could have easily predicted the model on my testing set with the code: postResample(predict(result_rfe1, x_test), y_test).  Nonetheless, I have built a model with the most important features from rfe and used the techniques that were taught in the Practical Machine Learning Course to build my final model.   
+
+```{r, echo = TRUE}
+modelRF <- train(classe ~ ., data = finaltraining, trControl=fitControl, 
+                 method = "rf")
+```
+
+# Prediction and Out of Sample Error (confusion matrix) 
+
+After Building our model we will want to predict the outcome for the test data using the random forest model.   We will also want to assess the out of sample error. To do this we run the following code: 
+
+```{r, echo = TRUE}
+predictRF <- predict(modelRF, newdata = finaltesting)
+confusionmatrix <- confusionMatrix(predictRF, finaltesting$classe)
+confusionmatrix
+```
+
+Our final model, had an accuracy of 0.9901. With our Out-of-Sample error shown in the confusion matrix.  To explain this a little further, our model incorrectly categorized the A classe (16 times), the B classe (21 times), the C classe (29 times), the D classe (7 times), and the E classe (5 times).  This would lead to 78 misclassifications out of 7846 observations or an out of sample error of 0.009 which makes sense because the accuracy of our model was 0.9901.  
+
+Finally, I will not use the validation(and/or test) set that was downloaded and use that for the second portion of this project that utilizes this set and applies it to a prediction quiz. 

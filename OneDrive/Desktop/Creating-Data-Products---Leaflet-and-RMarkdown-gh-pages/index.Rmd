@@ -1,0 +1,117 @@
+---
+title: "Developing Data Products - R Markdown and Leaflet"
+author: "Sarah Spray"
+date: "9/18/2021"
+output:
+  html_document:
+    theme: "sandstone"
+    toc: yes
+    highlight: "zenburn"
+    keep_md: TRUE
+    fig_caption: yes
+---
+
+# Synopsis: 
+
+Create a web page using R Markdown that features a map created with Leaflet. 
+
+Host your webpage on either GitHub Pages, RPubs, or NeoCities.
+
+Your webpage must contain the date that you created the document, and it must contain a map created with Leaflet. We would love to see you show off your creativity! 
+
+Review Criteria:
+
+The rubric contains the following two questions:
+
+Does the web page feature a date and is this date less than two months before the date that you're grading this assignment?
+
+Does the web page feature an interactive map that appears to have been created with Leaflet?
+
+# Downloading the Data and Loading the Libraries
+
+The following packages and libraries were loaded into R: 
+
+```{r, echo=TRUE, message = FALSE, warning = FALSE}
+library(leaflet)
+library(dplyr)
+library(rgdal)
+library(sp)
+```
+
+Download the Data - COVID19 Vaccination Status in Minnesota, and a map of Minnesota. COVID-19 for the State of Minnesota was downloaded from https://mn.gov/covid19/vaccine/data/index.jsp and saved to a local computer. The map and county information was accessed from a gitrepository located at: https://github.com/deldersveld/topojson/blob/master/countries/us-states/MN-27-minnesota-counties.json. This repository was forked and downloaded and saved onto a local computer.  Both files were read into R, using the following code:
+
+```{r, echo = FALSE}
+vaccination_status <- read.csv("C:/Users/srspr/OneDrive/Desktop/Data Science/Developing Data Products/Peer Graded Assignment 1/People Vaccinated, By County_tcm1148-467651.csv")
+mn_counties <- readOGR("./MN-27-minnesota-counties.json")
+```
+
+# My Map - COVID19 Vaccination Status in Minnesota
+
+Now that I have both data frames with the information I need for my map I need to create a single map containing all of the information necessary for my map (i.e vaccination status, and location in the state of Minnesota).  To do this, I will merge my two data frames into one before creating my map. 
+
+```{r, echo = FALSE}
+names(vaccination_status)
+names(mn_counties)
+# It looks like the common connecting variable in each dataset is NAME/County; however I will need to check to make sure each connecting variable is the same length to do this we can look at the contents in each 
+NROW(vaccination_status$County)
+NROW(mn_counties$NAME)
+# It looks like there is one extra row in the vaccination_status$County variable... let's take a look at the contents of the variable
+vaccination_status$County
+# Ok, so in this case it's pretty obvious that the COVID-19 Data Set has a row indicating unknown/missing county information and for the purposes of this assignment we will drop this data before we combined our data sets.
+vaccination_status <-vaccination_status[!(vaccination_status$County=="UNKNOWN/MISSING"),] 
+# The last thing I will want to change to make sure all variables variables merge, when I combined data frames is to make sure the variables in my Spatial Polygon Data Frame look like the ones in my vaccination status data frame.  To do this, I will change the connecting variable(Name) to upper case and trim all white space.  Finally, I will merge the two data frames so that my Spatial Polygon Data Frame has all of my COVID-19 Vaccination Status information 
+mn_counties$NAME <- toupper(mn_counties$NAME)
+mn_counties$NAME <- trimws(mn_counties$NAME)
+mymap <- merge(mn_counties, vaccination_status, by.x = "NAME",
+               by.y = "County")
+View(mymap)
+```
+
+# Population with Completed COVID-19 Vaccine Series in Minnesota as of 9/9/2021 
+```{r, echo = FALSE}
+pal <- colorNumeric("plasma", NULL)
+
+leaflet(mymap) %>% 
+  addTiles() %>% 
+  addPolygons(stroke = TRUE, smoothFactor = 0.5, fillOpacity = 0.75, color = "#444444",
+              weight = 1, fillColor = ~pal(People.with.completed.vaccine.series), label = 
+                ~paste0(NAME, ": ", formatC(People.with.completed.vaccine.series, 
+                                            big.mark = ","))) %>%
+  addLegend("bottomleft", pal = pal, values = ~People.with.completed.vaccine.series,
+            title = "Population", opacity = 0.75)
+```
+
+# Adding Markers
+
+To get a better understanding of my map and why certain counties have more people vaccinated. I have chosen to add markers to my map that show the five most populated cities in Minnesota. It would make sense that more populated counties with some of the largest  cities have higher populations of people with completed COVID-19 vaccines. 
+
+As of 2019, the five largest cities in Minnesota(in order) are Minneapolis, St.Paul, Rochester, Bloomington, and Duluth. This information can be found at: https://mn.gov/admin/demography/data-by-topic/population-data/our-estimates/. Some of these cities you can already see on our map, others you can not.  So, hopefully this will help to clarify where most Minnesotans are, that are vaccinated. 
+
+As a result, I will add these cities as markers to see how they affect our county level data and vaccination status. 
+
+# Population with Completed COVID-19 Vaccine Series within the 5 most populated cities in Minnesota as of 9/9/2021 
+```{r, echo=TRUE}
+
+#Before, I add markers I will need to create a small dataset of the 5 most populous cities in MN including their geographical locations. I have pulled their location information from: https://www.geody.com/
+
+Cities <- c("Minneapolis", "St.Paul", "Rochester", "Bloomington", "Duluth")
+Latitude <- c(44.981944, 44.944167, 44.0234, 44.833611, 46.786944)
+Longitude <- c(-93.269167, -93.093611, -92.46295, -93.31, -92.098056)
+
+FiveCities <- cbind.data.frame(Cities,Latitude,Longitude)
+
+# Now, that I have added all my markers into a data frame with columns indicating latitude and longitude I can recreate my map by adding in markers showing the five most populated cities in Minnesota 
+
+leaflet(mymap) %>% 
+  addTiles() %>% 
+  addPolygons(stroke = TRUE, smoothFactor = 0.5, fillOpacity = 0.75, color = "#444444",
+              weight = 1, fillColor = ~pal(People.with.completed.vaccine.series), label = 
+                ~paste0(NAME, ": ", formatC(People.with.completed.vaccine.series, 
+                                            big.mark = ","))) %>%
+  addMarkers(lng = ~Longitude, lat=~Latitude, popup = Cities, label =
+               Cities, group = "Cities") %>%
+  addLegend("bottomleft", pal = pal, values = ~People.with.completed.vaccine.series,
+            title = "Population", opacity = 0.75)
+```
+
+My map shows that the five most populous cities in the state of Minnesota contain the most vaccinated number of individuals from COVID-19.  If I wanted to pursue further analyses, I might include vaccination rates by adding information in my initial data set about the population for each county or city.  This may be a more informative approach about what locations and areas in Minnesota are vaccinated compared to just the amount of people vaccinated.  
